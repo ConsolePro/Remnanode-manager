@@ -4,7 +4,7 @@ set -Eeuo pipefail
 # RemnaNode Manager — монолитный скрипт установки и администрирования Remnawave Node.
 #
 # Запуск без установки:
-#   bash <(curl -Ls https://raw.githubusercontent.com/OverlayNode/Remnanode-manager/main/install.sh)
+#   bash <(curl -Ls https://raw.githubusercontent.com/OverlayNode/Remnanode-manager/feature/v5-node-stability/install.sh)
 #
 # Возможности:
 # - RemnaNode (Docker) без Selfsteal, с Selfsteal, Selfsteal для уже установленной Node
@@ -23,7 +23,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || pwd)"
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
 
 RNM_REPO="${RNM_REPO:-OverlayNode/Remnanode-manager}"
-RNM_REF="${RNM_REF:-main}"
+RNM_REF="${RNM_REF:-feature/v5-node-stability}"
 RNM_RAW_URL="https://raw.githubusercontent.com/${RNM_REPO}/${RNM_REF}"
 RNM_COMMAND_PATH="/usr/local/bin/remnanode"
 RNM_LIB_DIR="/usr/local/lib/remnanode/modules"

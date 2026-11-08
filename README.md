@@ -17,7 +17,7 @@
 ## Быстрый запуск
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/OverlayNode/Remnanode-manager/main/install.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/OverlayNode/Remnanode-manager/feature/v5-node-stability/install.sh)
 ```
 
 Запускается только `install.sh` — ядро: установка и управление нодой, Reality, профиль Xray, шапка и главное меню. Остальное вынесено в модули и подгружается при первом открытии соответствующего пункта меню:
@@ -42,7 +42,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/OverlayNode/Remnanode-manager/
 ### Более проверяемый способ
 
 ```bash
-git clone https://github.com/OverlayNode/Remnanode-manager.git
+git clone --branch feature/v5-node-stability --single-branch https://github.com/OverlayNode/Remnanode-manager.git
 cd Remnanode-manager
 for file in install.sh modules/*.sh; do bash -n "$file" || exit; done
 sudo ./install.sh
@@ -369,7 +369,7 @@ bash tools/render-previews.sh        # пересобрать preview.png (Chrom
 Сразу после запуска VPS на Ubuntu автоматическое обновление может удерживать `/var/lib/dpkg/lock-frontend`. Удалять lock-файл вручную нельзя. Скрипт ждёт освобождения APT до 600 секунд; таймаут можно изменить:
 
 ```bash
-APT_LOCK_TIMEOUT=1200 bash <(curl -Ls https://raw.githubusercontent.com/OverlayNode/Remnanode-manager/main/install.sh)
+APT_LOCK_TIMEOUT=1200 bash <(curl -Ls https://raw.githubusercontent.com/OverlayNode/Remnanode-manager/feature/v5-node-stability/install.sh)
 ```
 
 ### Xray не запускается после включения geo
