@@ -1193,8 +1193,8 @@ manager_compose() {
 }
 
 start_stack() {
-  manager_compose config >/dev/null
-  manager_compose pull
+  manager_compose config >/dev/null || return 1
+  manager_compose pull || return 1
   manager_compose up -d --remove-orphans
 }
 
@@ -1369,25 +1369,51 @@ install_acme() {
 
   if [[ ! -x "$ACME_BIN" ]]; then
     info "Устанавливаю acme.sh..."
-    local installer
-    installer="$(mktemp)"
-    if ! curl --proto '=https' --tlsv1.2 -fsSL https://get.acme.sh -o "$installer"; then
-      rm -f "$installer"
-      die "Не удалось скачать установщик acme.sh."
+    local source_dir url downloaded=0
+    source_dir="$(mktemp -d)" || return 1
+    # Install locally from a verified archive. The get.acme.sh bootstrap downloads
+    # another archive internally and may pass an HTML error page straight to tar.
+    for url in \
+      https://codeload.github.com/acmesh-official/acme.sh/tar.gz/refs/heads/master \
+      https://github.com/acmesh-official/acme.sh/archive/refs/heads/master.tar.gz; do
+      info "Источник acme.sh: ${url}"
+      if curl --proto '=https' --tlsv1.2 -fsSL --connect-timeout 10 --max-time 90 --retry 1 \
+          "$url" -o "${source_dir}/source.tar.gz" \
+        && gzip -t "${source_dir}/source.tar.gz" 2>/dev/null \
+        && tar -tzf "${source_dir}/source.tar.gz" > "${source_dir}/members" 2>/dev/null \
+        && grep -Fxq 'acme.sh-master/acme.sh' "${source_dir}/members" \
+        && ! grep -Eq '(^/|(^|/)\.\.(/|$))' "${source_dir}/members" \
+        && ! grep -Evq '^acme\.sh-master(/|$)' "${source_dir}/members"; then
+        downloaded=1
+        break
+      fi
+      warn "Не удалось получить корректный архив acme.sh; пробую следующий официальный адрес."
+    done
+    if [[ "$downloaded" != 1 ]]; then
+      rm -rf "$source_dir"
+      err "Официальные источники acme.sh недоступны или вернули повреждённый архив. Проверь доступ к GitHub/codeload с сервера."
+      return 1
     fi
-    if ! sh "$installer" "email=${email}"; then
-      rm -f "$installer"
-      die "Установщик acme.sh завершился с ошибкой."
+    if ! tar -xzf "${source_dir}/source.tar.gz" -C "$source_dir" \
+      || ! sh -n "${source_dir}/acme.sh-master/acme.sh"; then
+      rm -rf "$source_dir"
+      err "Не удалось распаковать и проверить исходники acme.sh."
+      return 1
     fi
-    rm -f "$installer"
+    if ! (cd "${source_dir}/acme.sh-master" && sh ./acme.sh --install --home "$ACME_HOME" --accountemail "$email"); then
+      rm -rf "$source_dir"
+      err "Локальная установка acme.sh завершилась с ошибкой."
+      return 1
+    fi
+    rm -rf "$source_dir"
   else
     ok "acme.sh уже установлен."
   fi
 
   [[ -x "$ACME_BIN" ]] || die "acme.sh не найден."
 
-  "$ACME_BIN" --set-default-ca --server letsencrypt >/dev/null
-  "$ACME_BIN" --register-account -m "$email" --server letsencrypt >/dev/null 2>&1 || true
+  "$ACME_BIN" --set-default-ca --server letsencrypt >/dev/null || return 1
+  "$ACME_BIN" --register-account -m "$email" --server letsencrypt || return 1
 
   systemctl enable --now cron >/dev/null 2>&1 || true
 }
@@ -3273,11 +3299,11 @@ install_node_selfsteal() {
 
   configure_firewall "selfsteal"
 
-  issue_certificate "$DOMAIN" "$ACME_EMAIL"
+  issue_certificate "$DOMAIN" "$ACME_EMAIL" || return 1
 
-  start_stack
-  verify_basic
-  verify_selfsteal_local
+  start_stack || return 1
+  verify_basic || return 1
+  verify_selfsteal_local || return 1
 
   save_state
   offer_geo_routing
@@ -3321,11 +3347,11 @@ install_selfsteal_for_existing_node() {
 
   tune_hysteria_udp
   configure_firewall "selfsteal"
-  issue_certificate "$DOMAIN" "$ACME_EMAIL"
+  issue_certificate "$DOMAIN" "$ACME_EMAIL" || return 1
 
-  start_stack
-  verify_basic
-  verify_selfsteal_local
+  start_stack || return 1
+  verify_basic || return 1
+  verify_selfsteal_local || return 1
 
   save_state
   offer_geo_routing
@@ -3339,6 +3365,22 @@ install_selfsteal_for_existing_node() {
   echo "Connection info:    ${PROFILE_INFO}"
   echo
   warn "Следующий шаг: добавь ${PROFILE_FILE} в Remnawave Panel и назначь профиль этой ноде."
+}
+
+resume_selfsteal_install() {
+  load_state
+  is_selfsteal_mode || die "Нет сохранённой установки SelfSteal. Используй обычное меню установки."
+  validate_domain "$DOMAIN" && validate_email "$ACME_EMAIL" || die "В сохранённой установке нет корректных DOMAIN/ACME_EMAIL."
+  [[ -f "$NODE_COMPOSE_FILE" && -f "${BASE_DIR}/nginx.conf" && -f "${BASE_DIR}/html/index.html" ]] \
+    || die "Не найдены подготовленные Compose, nginx.conf или сайт. Возобновление невозможно."
+  info "Продолжаю установку ${DOMAIN} из сохранённого состояния (${NODE_COMPOSE_FILE})."
+  issue_certificate "$DOMAIN" "$ACME_EMAIL" || return 1
+  start_stack || return 1
+  verify_basic || return 1
+  verify_selfsteal_local || return 1
+  generate_xray_profile 1 || return 1
+  save_state || return 1
+  ok "Установка SelfSteal завершена. Профиль для Panel: ${PROFILE_FILE}"
 }
 
 configure_inbounds_existing() {
@@ -3380,7 +3422,7 @@ change_domain() {
   validate_email "$ACME_EMAIL" || die "Некорректный email."
 
   check_domain_dns "$DOMAIN"
-  issue_certificate "$DOMAIN" "$ACME_EMAIL"
+  issue_certificate "$DOMAIN" "$ACME_EMAIL" || return 1
 
   write_nginx_conf "$DOMAIN"
   load_module sites
@@ -3415,6 +3457,7 @@ ssl_menu() {
     echo "4. Повторно установить сертификат в /opt/remnanode/ssl"
     echo "5. Показать acme.sh --info"
     echo "6. Изменить домен"
+    echo "7. Завершить установку после ошибки ACME"
     echo
     echo "0. Назад"
     echo
@@ -3433,6 +3476,7 @@ ssl_menu() {
       4) run_action install_cert_files "$DOMAIN"; pause ;;
       5) "$ACME_BIN" --info -d "$DOMAIN" --ecc || true; pause ;;
       6) run_action change_domain; load_state; pause ;;
+      7) run_action resume_selfsteal_install; pause ;;
       0) return 0 ;;
       *) ;;
     esac
@@ -3628,6 +3672,7 @@ RemnaNode Manager ${SCRIPT_VERSION}
   checker           внешний Xray Checker
   client-template   сгенерировать клиентский JSON РФ-direct
   profile           пересобрать Xray profile
+  resume-install    завершить подготовленную установку SelfSteal после ошибки ACME
   help              эта справка
 EOF
 }
@@ -3654,6 +3699,7 @@ main() {
     checker) ensure_runtime_tools; open_module_menu checker checker_menu ;;
     client-template) ensure_runtime_tools; load_state; load_module clients; client_template_write ;;
     profile) generate_xray_profile ;;
+    resume-install) ensure_runtime_tools; resume_selfsteal_install ;;
     *) usage >&2; return 2 ;;
   esac
 }

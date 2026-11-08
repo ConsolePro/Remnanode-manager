@@ -215,6 +215,16 @@ sudo remnanode checker     # Xray Checker на отдельном сервере
 
 ACME pre-hook освобождает 80 остановкой только `nginx-selfsteal`, post-hook возвращает его после выпуска/ошибки. Посторонний слушатель 80 не останавливается. Hooks сохраняются acme.sh для автоматического продления; при переходе существующей установки запусти ручной renew один раз. Reload проверяет Nginx, перезапускает работающую ноду только при включённом Hysteria2. Ошибка CA не показывается как успешное продление. Сертификаты подключены каталогом, чтобы новые файлы были видны контейнерам. При изменении конфигурации Nginx сохраняется inode bind-mounted файла.
 
+Если установка acme.sh остановилась на `gzip: stdin: not in gzip format`, GitHub вернул ответ, не являющийся архивом. Менеджер загружает исходники напрямую с официального `codeload.github.com`, проверяет gzip и содержимое tar и при ошибке пробует официальный архив `github.com`. Установка выполняется локально через `--install`, без повторной скрытой загрузки из `get.acme.sh`.
+
+После такого сбоя не удаляй подготовленную установку. Выполни от root, чтобы продолжить с сохранёнными доменом, Compose и сайтом:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/OverlayNode/Remnanode-manager/feature/v5-node-stability/install.sh) resume-install
+```
+
+Та же операция доступна в меню «Домен и SSL» → «Завершить установку после ошибки ACME». Если оба источника недоступны с VPS, исправь сетевой доступ: при ошибке скрипт останавливается до запуска стека без сертификата.
+
 **Xray Checker.** Устанавливается на отдельном сервере, использует служебную HTTPS-подписку, методы `ip/status/download`, обновление подписки и локальные метрики/UI на `127.0.0.1:2112`. Доступ: SSH-туннель `ssh -L 2112:127.0.0.1:2112 root@monitor-server`. Публичный домен, Telegram-бот и отдельная статус-страница в этом модуле не разворачиваются. Доступны настройка, статус, логи, перезапуск, обновление и удаление контейнера. Конфиг с URL подписки имеет права 600; не публикуй его.
 
 ## Проверки
@@ -223,6 +233,7 @@ ACME pre-hook освобождает 80 остановкой только `nginx
 for file in install.sh modules/*.sh tests/*.sh; do bash -n "$file" || exit; done
 bash tests/test_install.sh
 bash tests/test_features.sh
+bash tests/test_acme_install.sh
 python3 tests/test_compose.py  # python3-yaml
 RNM_XRAY_BIN=/path/to/xray RNM_XRAY_ASSETS=/path/to/assets python3 tests/test_xray_runtime.py
 ```
