@@ -113,7 +113,7 @@ INSTALL_MODE=basic
 EOF
 
 load_state
-assert_eq "4.2.0" "$SCRIPT_VERSION" "running version wins over state"
+assert_eq "5.0.0" "$SCRIPT_VERSION" "running version wins over state"
 assert_eq "basic" "$INSTALL_MODE" "install mode loaded"
 assert_eq "remnawave/node:latest" "$NODE_IMAGE" "default node image"
 
@@ -181,6 +181,7 @@ ensure_routing_lists
 assert_ok test -f "${ROUTING_DIR}/warp.list"
 assert_eq '["regexp:\\.onion$"]' "$(routing_list_json tor)" "tor list parsed without comments"
 
+SERVER_RU_RULES=1 DNS_HIJACK=1
 GEO_ENABLED=0 RU_POLICY=block BLOCK_ADS=0 WARP_OUTBOUND=0 PSIPHON_OUTBOUND=0 TOR_OUTBOUND=0
 routing="$(build_routing_json)"
 assert_ok jq -e '.rules[] | select(.protocol == ["bittorrent"] and .outboundTag == "BLOCK")' <<<"$routing"
@@ -227,14 +228,11 @@ assert_eq "dns-out" "$(jqn -r '.rules[1].outboundTag' <<<"$routing")" "client DN
 DNS_RU="77.88.8.8,77.88.8.1" DNS_FOREIGN="https://1.1.1.1/dns-query"
 dns="$(build_dns_json)"
 assert_eq "dns-internal" "$(jqn -r .tag <<<"$dns")" "dns tag"
-assert_eq "2" "$(jqn '[.servers[] | objects | select(.skipFallback)] | length' <<<"$dns")" "two RU resolvers"
-assert_ok jq -e '.servers[0].domains | index("ext:roscom-geosite.dat:category-ru")' <<<"$dns"
-assert_ok jq -e '.servers[0].expectIPs | index("ext:roscom-geoip.dat:direct")' <<<"$dns"
-assert_eq "https://1.1.1.1/dns-query" "$(jqn -r '.servers[-1]' <<<"$dns")" "foreign DoH is the fallback"
-
+assert_ok jq -e '.servers == ["https://1.1.1.1/dns-query"] and (has("disableFallbackIfMatch")|not)' <<<"$dns"
+assert_fail jq -e '.. | objects | select(has("expectIPs"))' <<<"$dns"
 GEO_ENABLED=0
 dns="$(build_dns_json)"
-assert_ok jq -e '.servers[0].expectIPs == ["geoip:ru"]' <<<"$dns"
+assert_ok jq -e '.queryStrategy == "UseIPv4"' <<<"$dns"
 
 DNS_HIJACK=0
 assert_fail jq -e '.[] | select(.tag == "dns-out")' <<<"$(build_outbounds_json)"
@@ -253,7 +251,8 @@ HY2_OBFS_PASSWORD="abc123"
 hy2="$(build_inbounds_json)"
 assert_ok jq -e '.[0].streamSettings.finalmask.udp == [{type: "salamander", settings: {password: "abc123"}}]' <<<"$hy2"
 assert_ok jq -e '.[0].streamSettings.finalmask.quicParams.congestion == "bbr"' <<<"$hy2"
-assert_eq '{"udp":[{"type":"salamander","settings":{"password":"abc123"}}]}' "$(hy2_host_finalmask_json | tr -d '')" "host finalmask json"
+assert_eq '{"udp":[{"type":"salamander","settings":{"password":"abc123"}}]}' "$(hy2_host_finalmask_json | tr -d '
+')" "host finalmask json"
 HY2_OBFS_PASSWORD="" HY2_ENABLED=0 DOMAIN=""
 
 # --- Генерация профиля (basic: без inbound'ов) --------------------------------
@@ -273,10 +272,10 @@ assert_ok grep -q 'merge' "$PROFILE_INFO"
 assert_ok jq -e '.DirectSites | index("geosite:category-ru")' "$CLIENT_ROUTING_FILE"
 assert_ok jq -e '.BlockSites | index("geosite:torrent")' "$CLIENT_ROUTING_FILE"
 assert_ok jq -e '.GlobalProxy == "true"' "$CLIENT_ROUTING_FILE"
-assert_ok jq -e '.[-1].outboundTag == "proxy"' "$CLIENT_RULES_FILE"
-assert_ok jq -e '.dns.servers | length >= 2' "$PROFILE_FILE"
+assert_fail jq -e '.[] | select(.network == "tcp,udp" and .outboundTag == "proxy")' "$CLIENT_RULES_FILE"
+assert_ok jq -e '.dns.servers | length >= 1' "$PROFILE_FILE"
 assert_ok jq -e '.DomesticDNSIP == "77.88.8.8" and .RemoteDNSDomain == "https://1.1.1.1/dns-query"' "$CLIENT_ROUTING_FILE"
-assert_ok jq -e '.servers[0].expectIPs == ["geoip:ru"] and .servers[1] == "https://1.1.1.1/dns-query"' "$CLIENT_DNS_FILE"
+assert_ok jq -e '.servers[0] == "https://common.dot.dns.yandex.net/dns-query" and .hosts["common.dot.dns.yandex.net"] == ["77.88.8.8"]' "$CLIENT_DNS_FILE"
 assert_ok grep -qx 'ru.sberbankmobile' "$CLIENT_APPS_FILE"
 
 assert_eq '"privateKey": "[REDACTED]"' "$(printf '"privateKey": "abc123"' | redact_secrets)" "private key redaction"

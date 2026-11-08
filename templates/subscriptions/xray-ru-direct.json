@@ -1,0 +1,139 @@
+{
+  "log": {
+    "loglevel": "warning"
+  },
+  "remnawave": {
+    "addVirtualHostAsOutbound": true
+  },
+  "dns": {
+    "tag": "dns-internal",
+    "queryStrategy": "UseIPv4",
+    "hosts": {
+      "common.dot.dns.yandex.net": [
+        "77.88.8.8"
+      ]
+    },
+    "servers": [
+      "https://common.dot.dns.yandex.net/dns-query",
+      "77.88.8.8"
+    ]
+  },
+  "inbounds": [
+    {
+      "tag": "socks",
+      "listen": "127.0.0.1",
+      "port": 10808,
+      "protocol": "socks",
+      "settings": {
+        "auth": "noauth",
+        "udp": true
+      },
+      "sniffing": {
+        "enabled": true,
+        "routeOnly": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    },
+    {
+      "tag": "http",
+      "listen": "127.0.0.1",
+      "port": 10809,
+      "protocol": "http",
+      "settings": {
+        "allowTransparent": false
+      },
+      "sniffing": {
+        "enabled": true,
+        "routeOnly": true,
+        "destOverride": [
+          "http",
+          "tls",
+          "quic"
+        ]
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "tag": "block",
+      "protocol": "blackhole"
+    },
+    {
+      "tag": "direct",
+      "protocol": "freedom",
+      "settings": {
+        "domainStrategy": "UseIPv4"
+      }
+    }
+  ],
+  "routing": {
+    "domainStrategy": "IPIfNonMatch",
+    "rules": [
+      {
+        "type": "field",
+        "inboundTag": [
+          "dns-internal"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "protocol": [
+          "bittorrent"
+        ],
+        "outboundTag": "block"
+      },
+      {
+        "type": "field",
+        "domain": [
+          "geosite:private"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "geoip:private"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "domain": [
+          "geosite:ru-blocked"
+        ],
+        "outboundTag": "proxy"
+      },
+      {
+        "type": "field",
+        "domain": [
+          "geosite:category-ru",
+          "geosite:yandex",
+          "geosite:mailru",
+          "regexp:\\.ru$",
+          "regexp:\\.su$",
+          "regexp:\\.xn--p1ai$"
+        ],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "geoip:ru-blocked"
+        ],
+        "outboundTag": "proxy"
+      },
+      {
+        "type": "field",
+        "ip": [
+          "geoip:ru"
+        ],
+        "outboundTag": "direct"
+      }
+    ]
+  }
+}

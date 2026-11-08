@@ -2,7 +2,7 @@
 # RemnaNode Manager — модуль: администрирование сервера и бэкапы.
 # Загружается ядром install.sh через load_module; отдельно не запускается.
 # shellcheck disable=SC2034
-RNM_MODULE_VERSION="4.2.0"
+RNM_MODULE_VERSION="5.0.0"
 
 docker_cleanup() {
   docker_available || die "Docker недоступен."

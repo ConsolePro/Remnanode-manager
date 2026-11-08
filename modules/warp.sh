@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# RemnaNode Manager — модуль: WARP (Chara-Freedom/vps-warp): WireGuard-интерфейс warp без смены default route.
+# RemnaNode Manager — WARP Native (distillium): отдельный интерфейс warp.
 # Загружается ядром install.sh через load_module; отдельно не запускается.
 # shellcheck disable=SC2034
-RNM_MODULE_VERSION="4.2.0"
+RNM_MODULE_VERSION="5.0.0"
 
 warp_installed() {
   [[ -f /etc/wireguard/warp.conf ]]
@@ -13,9 +13,18 @@ warp_install() {
   if warp_installed; then
     ok "WARP уже установлен."
   else
-    run_remote_installer "$WARP_INSTALL_URL" || die "Установка WARP прервана."
+    warn "WARP Native настроит интерфейс и системный DNS. Текущий resolv.conf будет восстановлен после установки."
+    local dns_backup rc=0
+    dns_backup="$(mktemp)"
+    cp -L /etc/resolv.conf "$dns_backup"
+    run_remote_installer "$WARP_INSTALL_URL" || rc=$?
+    cat "$dns_backup" > /etc/resolv.conf
+    rm -f "$dns_backup"
+    [[ "$rc" == 0 ]] || die "Установка WARP прервана."
   fi
+  grep -Eq '^Table[[:space:]]*=[[:space:]]*off' /etc/wireguard/warp.conf || die "В warp.conf отсутствует Table = off: не включаю outbound."
   ip link show warp >/dev/null 2>&1 || die "Интерфейс warp не появился."
+  warp_test || die "WARP не прошёл проверку; профиль не изменён."
   WARP_OUTBOUND="1"
   save_state
   generate_xray_profile 1
@@ -25,29 +34,25 @@ warp_install() {
 warp_test() {
   ip link show warp >/dev/null 2>&1 || die "Интерфейс warp не найден."
   info "Проверка выхода через интерфейс warp:"
-  curl -4 -fsS --max-time 15 --interface warp https://www.cloudflare.com/cdn-cgi/trace \
-    | grep -E '^(ip|loc|warp)=' || die "Запрос через warp не прошёл."
+  local trace
+  trace="$(curl -4 -fsS --max-time 15 --interface warp https://www.cloudflare.com/cdn-cgi/trace)" || return 1
+  grep -E '^(ip|loc|warp)=' <<<"$trace"
+  grep -Eq '^warp=(on|plus)' <<<"$trace" || die "Cloudflare не подтвердил выход через WARP."
 }
 
 warp_status() {
-  if command -v vps-warp >/dev/null 2>&1; then
-    vps-warp || true
-  else
-    wg show warp 2>/dev/null || warn "WARP не установлен."
-  fi
+  wg show warp 2>/dev/null || warn "WARP не установлен."
+  systemctl status wg-quick@warp warp-native-killswitch.service --no-pager || true
 }
 
 warp_uninstall() {
   confirm_no_default "Удалить WARP (wg-quick@warp, watchdog, /etc/wireguard/warp.conf)?" || return 0
   load_state
   WARP_OUTBOUND="0"
-  [[ "$RU_POLICY" == "warp" ]] && RU_POLICY="block"
+  [[ "$RU_POLICY" == "warp" ]] && RU_POLICY="direct"
   save_state
   generate_xray_profile 1
-  systemctl disable --now wg-quick@warp warp-watchdog.timer warp-watchdog.service 2>/dev/null || true
-  rm -rf /opt/vps-warp /etc/wireguard/warp.conf /usr/local/bin/vps-warp
-  rm -f /etc/systemd/system/warp-watchdog.{service,timer}
-  systemctl daemon-reload
+  run_remote_installer https://raw.githubusercontent.com/distillium/warp-native/main/uninstall.sh || return 1
   ok "WARP удалён. Не забудь отправить профиль в Panel."
 }
 
@@ -55,7 +60,7 @@ warp_menu() {
   while true; do
     clear || true
     load_state
-    echo -e "${C_BOLD}WARP${C_RESET} — Cloudflare WARP как outbound Xray (интерфейс warp, default route не меняется)"
+    echo -e "${C_BOLD}WARP Native${C_RESET} — Cloudflare WARP: интерфейс warp, mark 51888, выборочные домены"
     echo "Установлен: $(warp_installed && echo да || echo нет)   Outbound в профиле: ${WARP_OUTBOUND}"
     echo
     echo "1. Установить WARP и включить outbound"

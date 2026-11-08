@@ -2,7 +2,7 @@
 # RemnaNode Manager — модуль: routing: geo-файлы roscomvpn, DNS, политика РФ-трафика, клиентская маршрутизация.
 # Загружается ядром install.sh через load_module; отдельно не запускается.
 # shellcheck disable=SC2034
-RNM_MODULE_VERSION="4.2.0"
+RNM_MODULE_VERSION="5.0.0"
 
 show_client_routing() {
   load_state
@@ -11,7 +11,7 @@ show_client_routing() {
   echo
   echo "Чтобы РФ-сайты и приложения не видели VPN, нужны все три пункта:"
   echo "  • РФ-трафик идёт с клиента напрямую (с домашнего IP), а не через ноду;"
-  echo "  • РФ-домены резолвятся РФ-DNS напрямую, остальные — DoH через туннель (нет утечки DNS);"
+  echo "  • клиентский DNS не отбрасывает CDN за рубежом; полный шаблон использует DNS как в рабочем примере;"
   echo "  • РФ-приложения исключены из VPN целиком (раздельное туннелирование) —"
   echo "    иначе на Android/iOS они видят VPN-интерфейс, независимо от маршрутизации."
   echo
@@ -24,6 +24,8 @@ show_client_routing() {
   echo "2) Xray JSON-шаблон подписки Remnawave (теги proxy/direct/block):"
   echo "   routing.rules: ${CLIENT_RULES_FILE}"
   echo "   dns:           ${CLIENT_DNS_FILE}"
+  echo "   Полный JSON:   ${PROFILE_DIR}/subscription-xray-ru-direct.json"
+  echo "   Назначение через API и балансировщик: главное меню → Хосты, РФ-direct, балансировщик."
   echo
   jq -c '.[]' "$CLIENT_RULES_FILE"
   echo
@@ -99,12 +101,12 @@ dns_menu() {
     load_state
     echo -e "${C_BOLD}DNS${C_RESET}"
     echo
-    echo "РФ-домены:        ${DNS_RU}  (ответ принимается, только если указывает на РФ-адрес)"
-    echo "Остальные домены: ${DNS_FOREIGN}"
+    echo "РФ DNS для старого профиля Happ: ${DNS_RU}"
+    echo "Общий DNS ноды: ${DNS_FOREIGN} (без фильтрации по стране IP)"
     echo "Перехват клиентского DNS (порт 53) на ноде: $([[ "$DNS_HIJACK" == 1 ]] && echo включён || echo выключен)"
     echo
-    echo "1. DNS для РФ-доменов"
-    echo "2. DNS для остальных доменов"
+    echo "1. РФ DNS для старого профиля Happ"
+    echo "2. Общий DNS ноды"
     echo "3. Перехват клиентского DNS: вкл/выкл"
     echo "4. Проверить резолв с ноды"
     echo
@@ -289,20 +291,21 @@ geo_disable() {
 set_ru_policy() {
   load_state
   echo "Что делать с РФ-сайтами и белыми списками, если трафик пришёл на ноду:"
-  echo "1. block  — блокировать (клиент должен ходить к ним напрямую; рекомендуется)"
-  echo "2. direct — выпускать с IP ноды"
-  echo "3. warp   — выпускать через WARP"
+  echo "1. direct — выпускать с IP ноды (стандартный выход, не IP пользователя)"
+  echo "2. block  — блокировать (может ломать сайты и CDN)"
+  echo "3. warp   — выпускать через WARP (не даёт российский IP)"
   local choice
   read -r -p "Выбор [1]: " choice
   case "${choice:-1}" in
-    1) RU_POLICY="block" ;;
-    2) RU_POLICY="direct" ;;
+    1) RU_POLICY="direct" ;;
+    2) RU_POLICY="block" ;;
     3)
       [[ "$WARP_OUTBOUND" == "1" ]] || die "Сначала установи WARP и включи WARP outbound."
       RU_POLICY="warp"
       ;;
     *) die "Некорректный выбор." ;;
   esac
+  SERVER_RU_RULES=1
   save_state
   generate_xray_profile 1
 }
@@ -324,7 +327,7 @@ routing_menu() {
     echo
     echo "Схема: РФ + белые списки → напрямую у клиента (на ноде: ${RU_POLICY}), торренты → блок, остальное → прокси."
     echo "Geo: $([[ "$GEO_ENABLED" == 1 ]] && echo "roscomvpn (ext:${GEO_SITE_FILE})" || echo "встроенные geosite/geoip Xray")   Реклама: $([[ "$BLOCK_ADS" == 1 ]] && echo блок || echo пропуск)"
-    echo "DNS: РФ → ${DNS_RU}; остальное → ${DNS_FOREIGN}; перехват: $([[ "$DNS_HIJACK" == 1 ]] && echo вкл || echo выкл)"
+    echo "DNS ноды: ${DNS_FOREIGN}; перехват: $([[ "$DNS_HIJACK" == 1 ]] && echo вкл || echo выкл); страновые правила: ${SERVER_RU_RULES}"
     echo "Outbounds: WARP=${WARP_OUTBOUND} Psiphon=${PSIPHON_OUTBOUND} Tor=${TOR_OUTBOUND}"
     echo
     echo "1. Включить roscomvpn geo на ноде (скачать, смонтировать, автообновление)"

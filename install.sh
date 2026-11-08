@@ -18,7 +18,7 @@ set -Eeuo pipefail
 #
 # Запускать от root. Поддерживаются Ubuntu и Debian.
 
-SCRIPT_VERSION="4.2.0"
+SCRIPT_VERSION="5.0.0"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || pwd)"
 APT_LOCK_TIMEOUT="${APT_LOCK_TIMEOUT:-600}"
 
@@ -28,7 +28,7 @@ RNM_RAW_URL="https://raw.githubusercontent.com/${RNM_REPO}/${RNM_REF}"
 RNM_COMMAND_PATH="/usr/local/bin/remnanode"
 RNM_LIB_DIR="/usr/local/lib/remnanode/modules"
 # shellcheck disable=SC2034 # используется модулем admin и тестами
-RNM_MODULES="sites routing panel warp psiphon tor zapret monitor admin"
+RNM_MODULES="sites routing panel warp psiphon tor zapret monitor admin clients extensions network checker"
 
 NODE_IMAGE_REPO="remnawave/node"
 REMNAWAVE_IMAGE="${REMNAWAVE_IMAGE:-${NODE_IMAGE_REPO}:latest}"
@@ -61,7 +61,7 @@ GEO_SITE_URL="${GEO_SITE_URL:-https://github.com/hydraponique/roscomvpn-geosite/
 GEO_IP_URL="${GEO_IP_URL:-https://github.com/hydraponique/roscomvpn-geoip/releases/latest/download/geoip.dat}"
 XRAY_ASSET_DIR="/usr/local/share/xray"
 
-WARP_INSTALL_URL="${WARP_INSTALL_URL:-https://raw.githubusercontent.com/Chara-Freedom/vps-warp/main/warp_install.sh}"
+WARP_INSTALL_URL="${WARP_INSTALL_URL:-https://raw.githubusercontent.com/distillium/warp-native/main/install.sh}"
 PSIPHON_INSTALL_URL="${PSIPHON_INSTALL_URL:-https://raw.githubusercontent.com/Chara-Freedom/vps-psiphon/main/psiphon_install.sh}"
 
 NODE_PORT="2222"
@@ -72,6 +72,7 @@ ADDED_NGINX_DEPENDENCY="0"
 ACME_HOME="/root/.acme.sh"
 ACME_BIN="${ACME_HOME}/acme.sh"
 RELOAD_HELPER="/usr/local/sbin/reload-nginx-selfsteal"
+ACME_HOOK="/usr/local/sbin/remnanode-acme-hook"
 INSTALL_LOG="/var/log/remnanode-manager.log"
 
 C_RESET='\033[0m'
@@ -109,7 +110,11 @@ HY2_OBFS_PASSWORD=""     # Salamander: пусто = обфускация вык�
 
 # Routing.
 GEO_ENABLED="0"
-RU_POLICY="block"        # block | direct | warp
+RU_POLICY="direct"       # direct | block | warp (на ноде direct означает IP сервера)
+SERVER_RU_RULES="0"      # страновые правила на сервере только по явному выбору
+IP_MODE="ipv4"          # ipv4 | dual; не меняет IPv6 операционной системы
+BRIDGE_OUTBOUND_JSON="" # подготовленный outbound второго сервера
+BRIDGE_DIRECTION="ru"   # ru | foreign
 BLOCK_ADS="0"
 WARP_OUTBOUND="0"
 PSIPHON_OUTBOUND="0"
@@ -119,7 +124,7 @@ TOR_OUTBOUND="0"
 # DNS: РФ-домены — через РФ-резолверы, остальное — через зарубежный DoH.
 DNS_RU="77.88.8.8,77.88.8.1"
 DNS_FOREIGN="https://1.1.1.1/dns-query,https://8.8.8.8/dns-query"
-DNS_HIJACK="1"           # перехват клиентского DNS (порт 53) внутри туннеля
+DNS_HIJACK="0"           # опциональный перехват; DNS клиента не заменяем автоматически
 PANEL_PROFILE_UUID=""
 
 REALITY_PRIVATE_KEY=""
@@ -359,6 +364,10 @@ save_state() {
 
     printf 'GEO_ENABLED=%q\n' "$GEO_ENABLED"
     printf 'RU_POLICY=%q\n' "$RU_POLICY"
+    printf 'SERVER_RU_RULES=%q\n' "$SERVER_RU_RULES"
+    printf 'IP_MODE=%q\n' "$IP_MODE"
+    printf 'BRIDGE_OUTBOUND_JSON=%q\n' "$BRIDGE_OUTBOUND_JSON"
+    printf 'BRIDGE_DIRECTION=%q\n' "$BRIDGE_DIRECTION"
     printf 'BLOCK_ADS=%q\n' "$BLOCK_ADS"
     printf 'WARP_OUTBOUND=%q\n' "$WARP_OUTBOUND"
     printf 'PSIPHON_OUTBOUND=%q\n' "$PSIPHON_OUTBOUND"
@@ -673,6 +682,9 @@ configure_firewall() {
     if [[ "$HY2_ENABLED" == "1" ]]; then
       managed_rules+=("allow ${HY2_PORT}/udp")
     fi
+    if [[ "$RAW_ENABLED" != 1 && "$XHTTP_ENABLED" != 1 ]]; then
+      managed_rules+=("allow 443/tcp")
+    fi
   fi
 
   local rule
@@ -802,6 +814,7 @@ services:
     container_name: nginx-selfsteal
     hostname: nginx-selfsteal
     image: ${NGINX_IMAGE}
+    network_mode: host
     restart: always
 
     logging:
@@ -1027,6 +1040,7 @@ if action == "selfsteal-add":
         "container_name": "nginx-selfsteal",
         "hostname": "nginx-selfsteal",
         "image": nginx_image,
+        "network_mode": "host",
         "restart": "always",
         "logging": {
             "driver": "json-file",
@@ -1115,6 +1129,20 @@ elif action == "set-image":
     if not argument:
         raise SystemExit("Не указан image.")
     node["image"] = argument
+
+elif action in ("core-add", "core-remove"):
+    volumes = node_volumes()
+    target = "/usr/local/bin/xray"
+    existing = [v for v in volumes if volume_parts(v)[1] == target]
+    if existing:
+        source_path = volume_parts(existing[0])[0]
+        if not source_path or "/rnm-cores/" not in source_path:
+            raise SystemExit("Xray уже смонтирован другим менеджером; mount сохранён.")
+        volumes[:] = [v for v in volumes if volume_parts(v)[1] != target]
+    if action == "core-add":
+        if not argument.startswith("/") or "/rnm-cores/" not in argument:
+            raise SystemExit("Нужен абсолютный путь к управляемому ядру.")
+        ensure_volume(volumes, argument, target, read_only=True)
 
 else:
     raise SystemExit(f"Неизвестное действие: {action}")
@@ -1208,7 +1236,15 @@ verify_basic() {
 write_nginx_conf() {
   local domain="$1"
   local nginx_file="${BASE_DIR}/nginx.conf"
-  local tmp_file
+  local tmp_file https_listen="" redirect_port=""
+  if [[ "$RAW_ENABLED" == 1 ]]; then
+    [[ "$RAW_PORT" == 443 ]] || redirect_port=":${RAW_PORT}"
+  elif [[ "$XHTTP_ENABLED" == 1 ]]; then
+    [[ "$XHTTP_PORT" == 443 ]] || redirect_port=":${XHTTP_PORT}"
+  fi
+  if [[ "$RAW_ENABLED" != 1 && "$XHTTP_ENABLED" != 1 ]]; then
+    https_listen="listen 443 ssl;"
+  fi
   tmp_file="$(mktemp "${nginx_file}.tmp.XXXXXX")"
 
   cat > "$tmp_file" <<EOF
@@ -1222,7 +1258,14 @@ ssl_session_cache shared:SelfStealSSL:10m;
 ssl_session_tickets off;
 
 server {
+    listen 80;
+    server_name _;
+    return 301 https://${domain}${redirect_port}\$request_uri;
+}
+
+server {
     listen unix:/dev/shm/nginx.sock ssl proxy_protocol;
+    ${https_listen}
     http2 on;
 
     server_name ${domain};
@@ -1279,7 +1322,10 @@ EOF
 
   chmod 644 "$tmp_file"
   backup_file "$nginx_file"
-  mv -f "$tmp_file" "$nginx_file"
+  # Retain the inode used by Docker single-file bind mounts.
+  cat "$tmp_file" > "$nginx_file"
+  chmod 644 "$nginx_file"
+  rm -f "$tmp_file"
 }
 
 verify_selfsteal_local() {
@@ -1379,17 +1425,52 @@ ensure_port80_free() {
 write_reload_helper() {
   cat > "$RELOAD_HELPER" <<'EOF'
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 if docker inspect nginx-selfsteal >/dev/null 2>&1; then
-  docker restart nginx-selfsteal >/dev/null
+  if [[ "$(docker inspect -f '{{.State.Running}}' nginx-selfsteal)" == true ]]; then
+    docker exec nginx-selfsteal nginx -t
+    docker exec nginx-selfsteal nginx -s reload
+  elif [[ -f /run/remnanode-acme-nginx-stopped ]]; then
+    docker start nginx-selfsteal >/dev/null
+  fi
 fi
-if docker inspect remnanode >/dev/null 2>&1; then
+if grep -q '^HY2_ENABLED=1$' /opt/remnanode/installer.conf 2>/dev/null \
+  && [[ "$(docker inspect -f '{{.State.Running}}' remnanode 2>/dev/null)" == true ]]; then
   # Hysteria2 читает сертификат при старте Xray.
-  docker restart remnanode >/dev/null || true
+  docker restart remnanode >/dev/null
 fi
 exit 0
 EOF
   chmod 755 "$RELOAD_HELPER"
+}
+
+write_acme_hook() {
+  cat > "$ACME_HOOK" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+marker=/run/remnanode-acme-nginx-stopped
+case "${1:-}" in
+  pre)
+    if [[ "$(docker inspect -f '{{.State.Running}}' nginx-selfsteal 2>/dev/null)" == true ]]; then
+      touch "$marker"
+      docker stop nginx-selfsteal >/dev/null
+    fi
+    if ss -lnt '( sport = :80 )' | grep -q LISTEN; then
+      "$0" post
+      echo 'ACME: порт 80 занят другой службой' >&2
+      exit 1
+    fi
+    ;;
+  post)
+    if [[ -f "$marker" ]]; then
+      docker start nginx-selfsteal >/dev/null
+      rm -f "$marker"
+    fi
+    ;;
+  *) exit 2 ;;
+esac
+EOF
+  chmod 755 "$ACME_HOOK"
 }
 
 install_cert_files() {
@@ -1398,14 +1479,14 @@ install_cert_files() {
   mkdir -p "${BASE_DIR}/ssl"
   chmod 700 "${BASE_DIR}/ssl"
 
-  write_reload_helper
+  write_reload_helper || return 1
 
   "$ACME_BIN" --install-cert \
     -d "$domain" \
     --ecc \
     --key-file "${BASE_DIR}/ssl/privkey.pem" \
     --fullchain-file "${BASE_DIR}/ssl/fullchain.pem" \
-    --reloadcmd "$RELOAD_HELPER"
+    --reloadcmd "$RELOAD_HELPER" || return 1
 
   chmod 600 "${BASE_DIR}/ssl/privkey.pem"
   chmod 644 "${BASE_DIR}/ssl/fullchain.pem"
@@ -1419,20 +1500,24 @@ issue_certificate() {
   local domain="$1"
   local email="$2"
 
-  install_acme "$email"
+  install_acme "$email" || return 1
   check_domain_dns "$domain"
-  ensure_port80_free
+  write_acme_hook || return 1
 
   info "Выпускаю ECC сертификат Let's Encrypt для ${domain}..."
 
+  local acme_rc=0
   "$ACME_BIN" --issue \
     --standalone \
     -d "$domain" \
     --server letsencrypt \
     --keylength ec-256 \
-    || [[ $? == 2 ]]
+    --pre-hook "${ACME_HOOK} pre" \
+    --post-hook "${ACME_HOOK} post" || acme_rc=$?
+  "$ACME_HOOK" post || return 1
+  [[ "$acme_rc" == 0 || "$acme_rc" == 2 ]] || return "$acme_rc"
 
-  install_cert_files "$domain"
+  install_cert_files "$domain" || return 1
   ok "Сертификат установлен в ${BASE_DIR}/ssl."
 }
 
@@ -1444,7 +1529,7 @@ renew_certificate() {
   [[ -n "$DOMAIN" ]] || die "Неизвестен домен."
   [[ -x "$ACME_BIN" ]] || die "acme.sh не установлен."
 
-  ensure_port80_free
+  write_acme_hook || return 1
 
   if [[ "$force" == "1" ]]; then
     warn "Принудительный renew расходует лимиты CA."
@@ -1454,14 +1539,18 @@ renew_certificate() {
       -d "$DOMAIN" \
       --ecc \
       --server letsencrypt \
-      --force
+      --force \
+      --pre-hook "${ACME_HOOK} pre" \
+      --post-hook "${ACME_HOOK} post" || { local rc=$?; "$ACME_HOOK" post; return "$rc"; }
   else
     "$ACME_BIN" --renew \
       -d "$DOMAIN" \
       --ecc \
-      --server letsencrypt || true
+      --server letsencrypt \
+      --pre-hook "${ACME_HOOK} pre" \
+      --post-hook "${ACME_HOOK} post" || { local rc=$?; "$ACME_HOOK" post; [[ "$rc" == 2 ]] || return "$rc"; }
   fi
-
+  "$ACME_HOOK" post || return 1
   install_cert_files "$DOMAIN"
 }
 
@@ -1855,7 +1944,7 @@ build_inbounds_json() {
         listen: "0.0.0.0",
         protocol: "vless",
         settings: {clients: [], decryption: "none"},
-        sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]},
+        sniffing: {enabled: true, routeOnly: true, destOverride: ["http", "tls", "quic"]},
         streamSettings: {
           network: "raw",
           security: "reality",
@@ -1887,7 +1976,7 @@ build_inbounds_json() {
         listen: "0.0.0.0",
         protocol: "vless",
         settings: {clients: [], decryption: "none"},
-        sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]},
+        sniffing: {enabled: true, routeOnly: true, destOverride: ["http", "tls", "quic"]},
         streamSettings: {
           network: "xhttp",
           security: "reality",
@@ -1939,7 +2028,14 @@ build_inbounds_json() {
 
 build_outbounds_json() {
   local result
-  result='[{"tag":"DIRECT","protocol":"freedom"},{"tag":"BLOCK","protocol":"blackhole"}]'
+  result="$(jq -cn --arg mode "$IP_MODE" '[
+    {tag:"DIRECT", protocol:"freedom", settings:{domainStrategy:(if $mode == "dual" then "UseIP" else "UseIPv4" end)}},
+    {tag:"BLOCK", protocol:"blackhole"} ]')"
+  if [[ -n "$BRIDGE_OUTBOUND_JSON" ]]; then
+    jq -e '.tag == "BRIDGE" and (.protocol == "vless" or .protocol == "shadowsocks")' <<<"$BRIDGE_OUTBOUND_JSON" >/dev/null \
+      || die "Некорректный outbound моста."
+    result="$(jq -c --argjson bridge "$BRIDGE_OUTBOUND_JSON" '. + [$bridge]' <<<"$result")"
+  fi
 
   # Перехваченные DNS-запросы клиентов обрабатывает DNS-модуль Xray.
   if [[ "$DNS_HIJACK" == "1" ]]; then
@@ -1951,7 +2047,7 @@ build_outbounds_json() {
       tag: "WARP",
       protocol: "freedom",
       settings: {domainStrategy: "UseIPv4"},
-      streamSettings: {sockopt: {interface: "warp", tcpFastOpen: true}}
+      streamSettings: {sockopt: {interface: "warp", mark: 51888, tcpFastOpen: true}}
     }]' <<<"$result")"
   fi
 
@@ -2010,24 +2106,11 @@ csv_to_json() {
   tr ',' '\n' <<<"$1" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g' | grep -v '^$' | jq -R . | jq -cs .
 }
 
-# Split DNS. РФ-домены резолвятся РФ-серверами, и ответ принимается, только
-# если указывает на РФ-адрес (expectIPs) — иначе запрос уходит дальше.
-# Остальные домены — через зарубежный DoH, который не видят провайдер и ТСПУ.
+# DNS ноды не должен отбрасывать зарубежные CDN российских сервисов.
+# Страновой split DNS выполняется на клиенте, если он вообще требуется.
 build_dns_json() {
-  jq -cn \
-    --argjson ruDomains "$(ru_domain_matchers)" \
-    --argjson ruIps "$(ru_ip_matchers)" \
-    --argjson ruServers "$(csv_to_json "$DNS_RU")" \
-    --argjson foreign "$(csv_to_json "$DNS_FOREIGN")" \
-    '{
-      tag: "dns-internal",
-      queryStrategy: "UseIPv4",
-      disableFallbackIfMatch: true,
-      servers: (
-        [$ruServers[] | {address: ., domains: $ruDomains, expectIPs: $ruIps, skipFallback: true}]
-        + $foreign
-      )
-    }'
+  jq -cn --arg mode "$IP_MODE" --argjson servers "$(csv_to_json "$DNS_FOREIGN")" \
+    '{tag:"dns-internal", queryStrategy:(if $mode == "dual" then "UseIP" else "UseIPv4" end), servers:$servers}'
 }
 
 build_routing_json() {
@@ -2083,16 +2166,25 @@ build_routing_json() {
 
   # 5. РФ-сайты и белые списки. Клиент должен ходить к ним напрямую;
   #    если трафик всё же пришёл на ноду — применяется политика RU_POLICY.
-  ru_tag="$(ru_policy_tag)"
-  rules="$(jq -c --arg tag "$ru_tag" \
+  if [[ "$SERVER_RU_RULES" == "1" || -n "$BRIDGE_OUTBOUND_JSON" ]]; then
+    ru_tag="$(ru_policy_tag)"
+    [[ -n "$BRIDGE_OUTBOUND_JSON" && "$BRIDGE_DIRECTION" == "ru" ]] && ru_tag="BRIDGE"
+    rules="$(jq -c --arg tag "$ru_tag" \
     --argjson domains "$(ru_domain_matchers)" --argjson ips "$(ru_ip_matchers)" \
     '. + [
       {type: "field", domain: $domains, outboundTag: $tag},
       {type: "field", ip: $ips, outboundTag: $tag}
     ]' <<<"$rules")"
+  fi
+  if [[ -n "$BRIDGE_OUTBOUND_JSON" && "$BRIDGE_DIRECTION" == "foreign" ]]; then
+    rules="$(jq -c '. + [{type:"field", network:"tcp,udp", outboundTag:"BRIDGE"}]' <<<"$rules")"
+  fi
 
   # 6. Всё остальное уходит в первый outbound (DIRECT) — обычный выход ноды.
-  jq -cn --argjson rules "$rules" '{domainStrategy: "IPIfNonMatch", rules: $rules}'
+  local strategy=IPIfNonMatch
+  # Catch-all моста не должен поглощать запрос до проверки geoip:ru.
+  [[ -n "$BRIDGE_OUTBOUND_JSON" && "$BRIDGE_DIRECTION" == foreign ]] && strategy=IPOnDemand
+  jq -cn --arg strategy "$strategy" --argjson rules "$rules" '{domainStrategy:$strategy, rules:$rules}'
 }
 
 generate_xray_profile() {
@@ -2141,6 +2233,7 @@ generate_xray_profile() {
       routing: $routing
     }' > "$profile_tmp" || { rm -f "$profile_tmp" "$profile_info_tmp"; die "Не удалось собрать JSON profile."; }
 
+  validate_generated_profile "$profile_tmp" || { rm -f "$profile_tmp" "$profile_info_tmp"; die "Xray отклонил профиль; предыдущая версия сохранена."; }
   chmod 600 "$profile_tmp"
   [[ -f "$PROFILE_FILE" ]] && cp -a "$PROFILE_FILE" "${PROFILE_FILE}.prev"
   mv -f "$profile_tmp" "$PROFILE_FILE"
@@ -2151,7 +2244,7 @@ generate_xray_profile() {
     echo "Mode: ${INSTALL_MODE:-unknown}"
     echo "Domain: ${DOMAIN:-нет}"
     echo "Routing: geo=$([[ "$GEO_ENABLED" == 1 ]] && echo roscomvpn || echo builtin), RU=${RU_POLICY}, ads=${BLOCK_ADS}"
-    echo "DNS: РФ-домены → ${DNS_RU}; остальное → ${DNS_FOREIGN}; перехват клиентского DNS: $([[ "$DNS_HIJACK" == 1 ]] && echo вкл || echo выкл)"
+    echo "DNS ноды: ${DNS_FOREIGN}; перехват клиентского DNS: $([[ "$DNS_HIJACK" == 1 ]] && echo вкл || echo выкл)"
     echo "Outbounds: $(jq -r '[.[].tag] | join(", ")' <<<"$outbounds")"
     echo
 
@@ -2212,12 +2305,12 @@ generate_xray_profile() {
   ok "Xray profile сгенерирован: ${PROFILE_FILE}"
 
   generate_client_routing
-  validate_generated_profile || true
 }
 
 validate_generated_profile() {
   local file="${1:-$PROFILE_FILE}"
-  docker inspect remnanode >/dev/null 2>&1 || return 0
+  jq -e 'type=="object" and (.inbounds|type=="array") and (.outbounds|type=="array")' "$file" >/dev/null || return 1
+  docker inspect remnanode >/dev/null 2>&1 || { warn "Локальной ноды нет: проверен JSON, runtime-проверка Xray нужна на целевой ноде."; return 0; }
 
   info "Проверяю Xray JSON текущим Xray внутри remnanode..."
 
@@ -2374,31 +2467,11 @@ generate_client_routing() {
       FakeDNS: "false"
     }' > "$CLIENT_ROUTING_FILE"
 
-  # Xray JSON-шаблон подписки Remnawave (теги proxy/direct/block, стандартные
-  # geo-файлы клиента): routing.rules и dns.
-  local client_block='[{"type":"field","protocol":["bittorrent"],"outboundTag":"block"}]'
-  [[ "$BLOCK_ADS" == "1" ]] && client_block='[{"type":"field","protocol":["bittorrent"],"outboundTag":"block"},{"type":"field","domain":["geosite:category-ads-all"],"outboundTag":"block"}]'
-  jq -n --argjson block "$client_block" --arg domesticIp "$domestic_ip" '$block + [
-    {type: "field", ip: ["geoip:private"], outboundTag: "direct"},
-    {type: "field", ip: [$domesticIp], outboundTag: "direct"},
-    {type: "field", domain: ["geosite:private", "geosite:category-ru", "regexp:\\.ru$", "regexp:\\.su$", "regexp:\\.xn--p1ai$"], outboundTag: "direct"},
-    {type: "field", ip: ["geoip:ru"], outboundTag: "direct"},
-    {type: "field", network: "tcp,udp", outboundTag: "proxy"}
-  ]' > "$CLIENT_RULES_FILE"
-
-  jq -n --arg domesticIp "$domestic_ip" --arg remoteDoh "$remote_doh" '{
-    queryStrategy: "UseIPv4",
-    disableFallbackIfMatch: true,
-    servers: [
-      {
-        address: ("https://" + $domesticIp + "/dns-query"),
-        domains: ["geosite:category-ru", "regexp:\\.ru$", "regexp:\\.su$", "regexp:\\.xn--p1ai$"],
-        expectIPs: ["geoip:ru"],
-        skipFallback: true
-      },
-      $remoteDoh
-    ]
-  }' > "$CLIENT_DNS_FILE"
+  # Полный клиентский JSON: прокси добавляет панель.
+  load_module clients
+  client_template_write
+  jq '.routing.rules' "${PROFILE_DIR}/subscription-xray-ru-direct.json" > "$CLIENT_RULES_FILE"
+  jq '.dns' "${PROFILE_DIR}/subscription-xray-ru-direct.json" > "$CLIENT_DNS_FILE"
 
   write_client_ru_apps
   chmod 644 "$CLIENT_ROUTING_FILE" "$CLIENT_RULES_FILE" "$CLIENT_DNS_FILE" "$CLIENT_APPS_FILE"
@@ -2461,7 +2534,7 @@ node_running() {
 
 # Запускает бинарник Xray в контейнере ноды (xray или rw-core в новых образах).
 node_xray_exec() {
-  docker exec remnanode sh -c 'b="$(command -v xray || command -v rw-core || true)"; [ -n "$b" ] || exit 127; exec "$b" "$@"' sh "$@"
+  docker exec remnanode sh -c 'b="$(command -v rw-core || command -v xray || true)"; [ -n "$b" ] || exit 127; exec "$b" "$@"' sh "$@"
 }
 
 xray_running() {
@@ -3130,7 +3203,7 @@ prompt_domain_and_site() {
 offer_geo_routing() {
   echo
   info "Routing: РФ + белые списки → напрямую у клиента, торренты → блок, остальное → прокси."
-  if confirm "Подключить roscomvpn geosite/geoip на ноде (ежедневное автообновление)?"; then
+  if confirm_no_default "Подключить дополнительные серверные roscomvpn geo-файлы? Для клиентского РФ-direct они не нужны."; then
     load_module routing
     geo_enable || warn "Geo не подключён — используются встроенные geosite/geoip."
   fi
@@ -3488,9 +3561,10 @@ show_menu() {
   9. Routing: roscomvpn, РФ, торренты    15. Мониторинг и логи
  10. WARP                                16. Администрирование
  11. Psiphon                             17. Бэкапы
- 12. Tor
- 13. Zapret2
- 14. Remnawave Panel API
+ 12. Tor                                 18. Хосты, РФ-direct, балансировщик
+ 13. Zapret2                             19. Ядро Xray и плагины ноды
+ 14. Remnawave Panel API                 20. Сеть, IPv6 и серверный мост
+                                        21. Xray Checker
 
   0. Выход
 EOF
@@ -3527,6 +3601,10 @@ main_menu() {
       15) open_module_menu monitor monitoring_menu ;;
       16) open_module_menu admin admin_menu ;;
       17) open_module_menu admin backup_menu ;;
+      18) open_module_menu clients clients_menu ;;
+      19) open_module_menu extensions extensions_menu ;;
+      20) open_module_menu network network_menu ;;
+      21) open_module_menu checker checker_menu ;;
       0|q|Q) exit 0 ;;
       *) ;;
     esac
@@ -3544,6 +3622,11 @@ RemnaNode Manager ${SCRIPT_VERSION}
   install-command   установить команду remnanode в /usr/local/bin
   geo-update        обновить roscomvpn geo-файлы
   site-refresh      перегенерировать сайт-заглушку с новым отпечатком
+  clients           хосты, шаблоны подписки и балансировщик
+  extensions        ядро Xray и плагины ноды через Panel API
+  network           диагностика, IPv6, стабильный профиль, мост
+  checker           внешний Xray Checker
+  client-template   сгенерировать клиентский JSON РФ-direct
   profile           пересобрать Xray profile
   help              эта справка
 EOF
@@ -3565,6 +3648,11 @@ main() {
     install-command|install-manager) load_module admin; install_command ;;
     geo-update) load_module routing; geo_update_now ;;
     site-refresh) load_module sites; load_state; deploy_site "${SITE_TEMPLATE:-}" "$DOMAIN" ;;
+    clients) ensure_runtime_tools; open_module_menu clients clients_menu ;;
+    extensions) ensure_runtime_tools; open_module_menu extensions extensions_menu ;;
+    network) ensure_runtime_tools; open_module_menu network network_menu ;;
+    checker) ensure_runtime_tools; open_module_menu checker checker_menu ;;
+    client-template) ensure_runtime_tools; load_state; load_module clients; client_template_write ;;
     profile) generate_xray_profile ;;
     *) usage >&2; return 2 ;;
   esac
