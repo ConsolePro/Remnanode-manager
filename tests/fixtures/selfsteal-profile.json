@@ -1,0 +1,34 @@
+{
+  "log": {"loglevel": "none"},
+  "dns": {"servers": ["1.1.1.1", "1.0.0.1"]},
+  "inbounds": [
+    {
+      "tag": "VLESS_SELFSTEAL_WITH_NGINX",
+      "port": 443,
+      "protocol": "vless",
+      "settings": {"clients": [], "decryption": "none"},
+      "sniffing": {"enabled": true, "destOverride": ["http", "tls", "quic"]},
+      "streamSettings": {
+        "network": "raw",
+        "security": "reality",
+        "realitySettings": {
+          "xver": 1,
+          "target": "/dev/shm/nginx.sock",
+          "spiderX": "",
+          "shortIds": [""],
+          "privateKey": "test-private-key",
+          "serverNames": ["node.example.com"],
+          "minClientVer": "0.0.0"
+        }
+      }
+    }
+  ],
+  "outbounds": [{"tag": "DIRECT", "protocol": "freedom"}, {"tag": "BLOCK", "protocol": "blackhole"}],
+  "routing": {
+    "rules": [
+      {"ip": ["geoip:private"], "outboundTag": "BLOCK"},
+      {"domain": ["geosite:private"], "outboundTag": "BLOCK"},
+      {"protocol": ["bittorrent"], "outboundTag": "BLOCK"}
+    ]
+  }
+}

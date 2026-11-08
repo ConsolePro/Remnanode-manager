@@ -1770,7 +1770,7 @@ generate_reality_material() {
   load_reality
 
   if [[ -n "$REALITY_PRIVATE_KEY" && -n "$REALITY_PUBLIC_KEY" ]]; then
-    RAW_SHORT_IDS_JSON="$(ensure_shortids_json "${RAW_SHORT_IDS_JSON:-}" "${RAW_SHORT_ID:-}")"
+    RAW_SHORT_IDS_JSON='[""]'
     XHTTP_SHORT_IDS_JSON="$(ensure_shortids_json "${XHTTP_SHORT_IDS_JSON:-}" "${XHTTP_SHORT_ID:-}")"
     RAW_SHORT_ID="$(jq -r '.[0]' <<<"$RAW_SHORT_IDS_JSON")"
     XHTTP_SHORT_ID="$(jq -r '.[0]' <<<"$XHTTP_SHORT_IDS_JSON")"
@@ -1794,7 +1794,7 @@ generate_reality_material() {
   [[ "$REALITY_PUBLIC_KEY" =~ ^[A-Za-z0-9_=-]{32,128}$ ]] \
     || die "Xray вернул Reality Public Key в неожиданном формате."
 
-  RAW_SHORT_IDS_JSON="$(generate_shortids_json)"
+  RAW_SHORT_IDS_JSON='[""]'
   XHTTP_SHORT_IDS_JSON="$(generate_shortids_json)"
   RAW_SHORT_ID="$(jq -r '.[0]' <<<"$RAW_SHORT_IDS_JSON")"
   XHTTP_SHORT_ID="$(jq -r '.[0]' <<<"$XHTTP_SHORT_IDS_JSON")"
@@ -1831,6 +1831,10 @@ regenerate_short_ids() {
   load_state
   load_reality
   [[ -n "$REALITY_PRIVATE_KEY" ]] || die "Reality ещё не настроен."
+  if [[ "$XHTTP_ENABLED" != 1 ]]; then
+    info 'SelfSteal RAW использует shortIds: [""]. Ротация Short IDs доступна для XHTTP.'
+    return 0
+  fi
 
   echo "RAW Short IDs:   ${RAW_SHORT_IDS_JSON:-нет}"
   echo "XHTTP Short IDs: ${XHTTP_SHORT_IDS_JSON:-нет}"
@@ -1841,7 +1845,7 @@ regenerate_short_ids() {
   local count
   read -r -p "Количество (Enter = случайно 3–12): " count
   backup_file "$REALITY_FILE"
-  RAW_SHORT_IDS_JSON="$(generate_shortids_json "$count")"
+  RAW_SHORT_IDS_JSON='[""]'
   XHTTP_SHORT_IDS_JSON="$(generate_shortids_json "$count")"
   RAW_SHORT_ID="$(jq -r '.[0]' <<<"$RAW_SHORT_IDS_JSON")"
   XHTTP_SHORT_ID="$(jq -r '.[0]' <<<"$XHTTP_SHORT_IDS_JSON")"
@@ -1961,25 +1965,22 @@ build_inbounds_json() {
   if [[ "$RAW_ENABLED" == "1" ]]; then
     result="$(jq -c \
       --argjson port "$RAW_PORT" \
-      --argjson shortIds "$RAW_SHORT_IDS_JSON" \
       --arg privateKey "$REALITY_PRIVATE_KEY" \
       --arg domain "$DOMAIN" \
       '. + [{
-        tag: "VLESS_RAW_REALITY",
+        tag: "VLESS_SELFSTEAL_WITH_NGINX",
         port: $port,
-        listen: "0.0.0.0",
         protocol: "vless",
         settings: {clients: [], decryption: "none"},
-        sniffing: {enabled: true, routeOnly: true, destOverride: ["http", "tls", "quic"]},
+        sniffing: {enabled: true, destOverride: ["http", "tls", "quic"]},
         streamSettings: {
           network: "raw",
           security: "reality",
           realitySettings: {
-            show: false,
             xver: 1,
             target: "/dev/shm/nginx.sock",
             spiderX: "",
-            shortIds: $shortIds,
+            shortIds: [""],
             privateKey: $privateKey,
             serverNames: [$domain],
             minClientVer: "0.0.0"
@@ -2213,6 +2214,33 @@ build_routing_json() {
   jq -cn --arg strategy "$strategy" --argjson rules "$rules" '{domainStrategy:$strategy, rules:$rules}'
 }
 
+# The node profile is deliberately independent of client country routing and
+# optional server extensions. Keep the canonical SelfSteal shape provided by
+# the operator; only actual inbounds, ports, domain and key are substituted.
+build_node_profile_json() {
+  jq -n --argjson inbounds "$(build_inbounds_json)" '{
+    log:{loglevel:"none"},
+    dns:{servers:["1.1.1.1","1.0.0.1"]},
+    inbounds:$inbounds,
+    outbounds:[{tag:"DIRECT",protocol:"freedom"},{tag:"BLOCK",protocol:"blackhole"}],
+    routing:{rules:[
+      {ip:["geoip:private"],outboundTag:"BLOCK"},
+      {domain:["geosite:private"],outboundTag:"BLOCK"},
+      {protocol:["bittorrent"],outboundTag:"BLOCK"}
+    ]}
+  }'
+}
+
+generate_server_extensions() {
+  validate_dns_list "$DNS_FOREIGN" || return 1
+  local tmp
+  tmp="$(mktemp "${PROFILE_DIR}/.server-extensions.XXXXXX")" || return 1
+  jq -n --argjson o "$(build_outbounds_json)" --argjson d "$(build_dns_json)" --argjson r "$(build_routing_json)" \
+    '{outbounds:$o,dns:$d,routing:$r}' > "$tmp" || { rm -f "$tmp"; return 1; }
+  chmod 600 "$tmp"
+  mv -f "$tmp" "${PROFILE_DIR}/server-routing-extensions.json"
+}
+
 generate_xray_profile() {
   local use_current_state="${1:-0}"
   [[ "$use_current_state" == "1" ]] || load_state
@@ -2234,30 +2262,14 @@ generate_xray_profile() {
     [[ -n "$DOMAIN" ]] || die "DOMAIN отсутствует — Hysteria2 требует сертификат."
   fi
 
-  validate_dns_list "$DNS_RU" || die "Некорректный список РФ-DNS: ${DNS_RU}"
-  validate_dns_list "$DNS_FOREIGN" || die "Некорректный список зарубежных DNS: ${DNS_FOREIGN}"
-
-  local inbounds outbounds routing dns profile_tmp profile_info_tmp
+  local inbounds outbounds profile_tmp profile_info_tmp
   inbounds="$(build_inbounds_json)"
-  outbounds="$(build_outbounds_json)"
-  routing="$(build_routing_json)"
-  dns="$(build_dns_json)"
+  outbounds='[{"tag":"DIRECT","protocol":"freedom"},{"tag":"BLOCK","protocol":"blackhole"}]'
 
   profile_tmp="$(mktemp "${PROFILE_FILE}.tmp.XXXXXX")"
   profile_info_tmp="$(mktemp "${PROFILE_INFO}.tmp.XXXXXX")"
 
-  jq -n \
-    --argjson inbounds "$inbounds" \
-    --argjson outbounds "$outbounds" \
-    --argjson routing "$routing" \
-    --argjson dns "$dns" \
-    '{
-      log: {loglevel: "warning"},
-      dns: $dns,
-      inbounds: $inbounds,
-      outbounds: $outbounds,
-      routing: $routing
-    }' > "$profile_tmp" || { rm -f "$profile_tmp" "$profile_info_tmp"; die "Не удалось собрать JSON profile."; }
+  build_node_profile_json > "$profile_tmp" || { rm -f "$profile_tmp" "$profile_info_tmp"; die "Не удалось собрать JSON profile."; }
 
   validate_generated_profile "$profile_tmp" || { rm -f "$profile_tmp" "$profile_info_tmp"; die "Xray отклонил профиль; предыдущая версия сохранена."; }
   chmod 600 "$profile_tmp"
@@ -2269,17 +2281,19 @@ generate_xray_profile() {
     echo
     echo "Mode: ${INSTALL_MODE:-unknown}"
     echo "Domain: ${DOMAIN:-нет}"
-    echo "Routing: geo=$([[ "$GEO_ENABLED" == 1 ]] && echo roscomvpn || echo builtin), RU=${RU_POLICY}, ads=${BLOCK_ADS}"
-    echo "DNS ноды: ${DNS_FOREIGN}; перехват клиентского DNS: $([[ "$DNS_HIJACK" == 1 ]] && echo вкл || echo выкл)"
+    echo "Routing ноды: только private IP/domain и BitTorrent → BLOCK."
+    echo "DNS ноды: 1.1.1.1, 1.0.0.1. Log level: none."
+    echo "РФ-direct / остальные proxy / трекеры: отдельная клиентская маршрутизация."
+    echo "Дополнительные серверные настройки: ${PROFILE_DIR}/server-routing-extensions.json (применяются отдельно)."
     echo "Outbounds: $(jq -r '[.[].tag] | join(", ")' <<<"$outbounds")"
     echo
 
     if [[ "$RAW_ENABLED" == "1" ]]; then
       echo "[VLESS RAW + REALITY]"
-      echo "Tag: VLESS_RAW_REALITY"
+      echo "Tag: VLESS_SELFSTEAL_WITH_NGINX"
       echo "TCP port: ${RAW_PORT}"
       echo "SNI: ${DOMAIN}"
-      echo "Short IDs: $(jq -c . <<<"$RAW_SHORT_IDS_JSON")"
+      echo 'Short IDs: [""]'
       echo "Public Key / Password: ${REALITY_PUBLIC_KEY}"
       echo "Flow: xtls-rprx-vision"
       echo "Target: /dev/shm/nginx.sock"
@@ -2323,13 +2337,13 @@ generate_xray_profile() {
     fi
 
     echo "Profile: ${PROFILE_FILE}"
-    [[ "$GEO_ENABLED" == "1" ]] && echo "ВНИМАНИЕ: профиль использует ext:${GEO_SITE_FILE}/ext:${GEO_IP_FILE} — geo-файлы должны быть на КАЖДОЙ ноде с этим профилем."
   } > "$profile_info_tmp"
 
   chmod 600 "$profile_info_tmp"
   mv -f "$profile_info_tmp" "$PROFILE_INFO"
   ok "Xray profile сгенерирован: ${PROFILE_FILE}"
 
+  generate_server_extensions || warn "Дополнительные серверные настройки не экспортированы; базовый профиль создан."
   generate_client_routing
 }
 

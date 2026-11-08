@@ -35,7 +35,8 @@ network_diagnose() {
 
 network_stable_profile() {
   load_state
-  echo "Профиль: выход IPv4, DNS без страновых ограничений, без серверного РФ-block и перехвата клиентского DNS."
+  echo "Базовый профиль будет создан по шаблону SelfSteal: DNS Cloudflare, DIRECT/BLOCK, private и BitTorrent в блок."
+  echo "IPv4/DoH без страновых ограничений сохраняются отдельно в server-routing-extensions.json (режим extensions в Panel)."
   echo "Настройки IPv6 ОС и существующий мост не изменятся. После генерации применяй профиль в Panel с diff."
   confirm_no_default "Сохранить эти настройки и пересобрать профиль?" || return 0
   SERVER_RU_RULES=0 RU_POLICY=direct IP_MODE=ipv4 DNS_HIJACK=0

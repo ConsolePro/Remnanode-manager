@@ -58,7 +58,7 @@ sudo ./install.sh
   - Selfsteal для уже установленной Node (существующий Compose дополняется, а не перезаписывается).
 - **Версия Node** — обновление, выбор тега с Docker Hub, откат на предыдущую версию по digest (работает даже с `latest`), закрепление версии.
 - **Сайты-заглушки** — 12 готовых шаблонов; при каждом развёртывании сайт уникализируется.
-- **Протоколы** — VLESS TCP (RAW) + Reality + Vision, VLESS XHTTP + Reality, Hysteria2: любой один или сразу все; 3–12 случайных shortIds, ротация ключей.
+- **Протоколы** — VLESS TCP (RAW) + Reality + Vision, VLESS XHTTP + Reality, Hysteria2: любой один или сразу все; пустой shortId для RAW SelfSteal, случайные shortIds для XHTTP, ротация ключей.
 - **Routing** — сервер без автоматического РФ-block, полный клиентский JSON РФ-direct, балансировщик и мост через VLESS/Shadowsocks; опциональные серверные geo-файлы.
 - **DNS** — общий DoH ноды без фильтрации CDN по стране IP, отдельный клиентский DNS; перехват порта 53 включается по выбору.
 - **Модули** — WARP, Psiphon, Tor (с мостами obfs4/webtunnel/snowflake), Zapret2.
@@ -166,17 +166,27 @@ Remnawave берёт параметры обфускации для ссылки
 
 ## Переход на 5.0 и стабильная работа
 
-В 4.x сервер по умолчанию блокировал российские IP/домены, а split DNS принимал ответы для РФ-доменов только с российскими IP. Это могло ломать CDN, изображения и отдельные сайты. В 5.0 страновые правила на ноде выключены, DNS не ограничивает страну ответа, перехват клиентского DNS выключен, выход Xray использует IPv4. Изменение этих значений **не меняет уже сохранённый Config Profile в Panel**.
+В 4.x сервер по умолчанию блокировал российские IP/домены, а split DNS принимал ответы для РФ-доменов только с российскими IP. Это могло ломать CDN, изображения и отдельные сайты. Базовый профиль 5.0 соответствует шаблону SelfSteal: loglevel none, DNS 1.1.1.1/1.0.0.1, выходы DIRECT/BLOCK и блокировка private IP, private-доменов и BitTorrent. Настройки страновой маршрутизации, IPv4/IPv6, WARP и DNS экспортируются отдельно и автоматически в этот профиль не добавляются. Изменение этих значений **не меняет уже сохранённый Config Profile в Panel**.
 
 Для существующей установки:
 
 1. Обнови установленную команду и модули через `bash install.sh install-command` из обновлённого клона.
 2. `sudo remnanode network` → «Стабильный профиль»: сохраняет backup состояния и генерирует новый профиль. Старые явно сохранённые настройки не сбрасываются при обычном запуске меню.
-3. Panel API → отправка профиля в режиме merge: просмотри diff, проверь результат Xray и примени. Merge оставляет inbound-параметры панели, обновляя outbounds/routing/dns.
+3. Panel API → отправка профиля в режиме merge: просмотри diff, проверь результат Xray и примени. Merge оставляет inbound-параметры панели, обновляя log/outbounds/routing/dns. Чтобы заменить старый inbound новым шаблоном SelfSteal, выбери full; после смены тега проверь привязки хостов и групп в панели.
 4. `sudo remnanode clients` → настрой хосты, затем назначь полный клиентский JSON выбранным хостам. Обнови именно Xray JSON-подписку на устройствах.
 5. Если проблема повторяется, `sudo remnanode network` → диагностика. Проверяй DNS, HTTP/TLS IPv4/IPv6, OOM/перезапуски, conntrack и свободное место. Проверка с ноды не заменяет проверку через реальное клиентское подключение.
 
 Скрипт не устанавливает причину прежних обрывов без данных действующей ноды. TCP MTU probing/keepalive применяются отдельным пунктом, с сохранением предыдущих sysctl. Это помогает при некоторых проблемах PMTU/мёртвых соединений, но не исправляет ограничения IP со стороны сайта или недоступный серверный выход.
+
+## Базовый профиль SelfSteal
+
+Генератор `profile` создаёт `profiles/xray-profile.json` по указанному шаблону: `log.loglevel: none`, DNS `1.1.1.1` и `1.0.0.1`, RAW inbound `VLESS_SELFSTEAL_WITH_NGINX`, Reality target `/dev/shm/nginx.sock`, `xver: 1`, `shortIds: [""]`, выходы DIRECT/BLOCK. Sniffing RAW содержит `enabled` и `destOverride` без `routeOnly`. Приватный ключ и serverNames подставляются из настроек ноды; выбранный порт сохраняется. Если включены XHTTP/Hysteria2, их inbound'ы добавляются отдельно.
+
+В routing базового профиля ровно три правила: `geoip:private`, `geosite:private`, `protocol: bittorrent` → BLOCK. РФ-direct, зарубежный proxy и списки трекеров остаются в отдельно настроенной клиентской маршрутизации.
+
+Параметры меню Routing/WARP/моста/IPv6 и серверного DNS экспортируются в отдельный `profiles/server-routing-extensions.json`. Они применяются только через режим **extensions** меню Panel API с diff и backup. Обычные **merge/full** используют базовый профиль, поэтому сохранённые старые настройки не дописывают страновые правила и дополнительные outbound'ы в шаблон SelfSteal.
+
+При переходе с тега `VLESS_RAW_REALITY` на `VLESS_SELFSTEAL_WITH_NGINX` нужен режим **full** либо ручная замена inbound в панели. Проверь привязки хостов/групп и обнови подписки: Short ID RAW теперь пустой. Мастер хостов понимает оба тега для совместимости со старыми профилями. Ротация Short IDs действует только на XHTTP; RAW остаётся с `[""]`.
 
 ## Routing, клиенты и хосты
 
@@ -209,7 +219,7 @@ sudo remnanode checker     # Xray Checker на отдельном сервере
 
 **WARP Native.** Используется [distillium/warp-native](https://github.com/distillium/warp-native), интерфейс `warp`, `Table = off`, mark `51888` для совместимости с его kill-switch. Общий default route не переводится в WARP. Перед включением outbound проверяются интерфейс и `warp=on/plus`. Установщик меняет системный DNS; менеджер сохраняет и восстанавливает содержимое `/etc/resolv.conf`. Ранее установленный сторонний WARP автоматически не мигрируется и может не иметь kill-switch Native. Изменение профиля требуется отправить в Panel.
 
-**IPv6.** Можно отдельно выбрать dual-stack Xray или изменить IPv6 ОС. По умолчанию меняется только предпочтение выхода Xray. При отключении IPv6 ОС по текущему IPv6 SSH операция отклоняется; значения sysctl сохраняются. Скрипт не меняет GRUB и не создаёт отсутствующие адреса/маршруты провайдера. При включении IPv6 ОС нужно проверить сетевой менеджер и AAAA-записи.
+**IPv6.** Можно отдельно выбрать dual-stack Xray или изменить IPv6 ОС. Предпочтение выхода Xray записывается в отдельный файл серверных расширений и применяется режимом extensions. При отключении IPv6 ОС по текущему IPv6 SSH операция отклоняется; значения sysctl сохраняются. Скрипт не меняет GRUB и не создаёт отсутствующие адреса/маршруты провайдера. При включении IPv6 ОС нужно проверить сетевой менеджер и AAAA-записи.
 
 **SelfSteal и сертификаты.** Xray принимает Reality и передаёт маскировочный TLS на Unix-сокет Nginx с PROXY protocol. Nginx отдаёт HTTP → HTTPS с фиксированным настроенным доменом, без доверия пользовательскому Host. Если Reality TCP-порт нестандартный, он входит в redirect; при одном Hysteria2 Nginx обслуживает TCP/443 сам. IPv6-публикацию входящих портов нужно согласовать с AAAA и listen-настройками; серверный `IP_MODE=dual` управляет только исходящим трафиком.
 
@@ -234,6 +244,7 @@ for file in install.sh modules/*.sh tests/*.sh; do bash -n "$file" || exit; done
 bash tests/test_install.sh
 bash tests/test_features.sh
 bash tests/test_acme_install.sh
+bash tests/test_node_profile.sh
 python3 tests/test_compose.py  # python3-yaml
 RNM_XRAY_BIN=/path/to/xray RNM_XRAY_ASSETS=/path/to/assets python3 tests/test_xray_runtime.py
 ```
@@ -260,7 +271,7 @@ RNM_XRAY_BIN=/path/to/xray RNM_XRAY_ASSETS=/path/to/assets python3 tests/test_xr
 1. Сохранить URL панели и API-токен (`/opt/remnanode/panel.env`, `0600`).
 2. Выбрать Config Profile.
 3. Отправить профиль:
-   - **merge** — inbound'ы панели остаются, заменяются `outbounds`, `routing`, `dns` (подходит для любой ноды);
+   - **merge** — inbound'ы панели остаются, заменяются `log`, `outbounds`, `routing`, `dns` (подходит для любой ноды);
    - **full** — профиль заменяется целиком (для Selfsteal-нод со сгенерированными inbound'ами).
 
 Перед отправкой текущий профиль сохраняется в `backups/` и показывается diff (приватные ключи скрыты). Используются `GET /api/config-profiles`, `GET /api/config-profiles/{uuid}` и `PATCH /api/config-profiles`.

@@ -81,16 +81,22 @@ panel_push_profile() {
 
   echo
   echo "Режим обновления:"
-  echo "1. merge — оставить inbound'ы панели, заменить outbounds / routing / dns (рекомендуется)"
+  echo "1. merge — оставить inbound'ы панели, применить базовые log / outbounds / routing / dns"
   echo "2. full  — полностью заменить профиль сгенерированным (нужны inbound'ы Selfsteal)"
+  echo "3. extensions — отдельно применить дополнительные серверные настройки (WARP / мост / DNS / geo)"
   read -r -p "Выбор [1]: " mode_choice
   case "${mode_choice:-1}" in
-    1) jq --slurpfile gen "$PROFILE_FILE" '. + {outbounds: $gen[0].outbounds, routing: $gen[0].routing, dns: $gen[0].dns}' \
+    1) jq --slurpfile gen "$PROFILE_FILE" '. + {log: $gen[0].log, outbounds: $gen[0].outbounds, routing: $gen[0].routing, dns: $gen[0].dns}' \
          "$current_config" > "$new_config" ;;
     2)
       [[ "$(jq '.inbounds | length' "$PROFILE_FILE")" != "0" ]] \
         || die "В сгенерированном профиле нет inbound'ов — используй merge."
       cp "$PROFILE_FILE" "$new_config"
+      ;;
+    3)
+      [[ -f "${PROFILE_DIR}/server-routing-extensions.json" ]] || generate_xray_profile 1
+      jq --slurpfile ext "${PROFILE_DIR}/server-routing-extensions.json" \
+        '. + {outbounds:$ext[0].outbounds,routing:$ext[0].routing,dns:$ext[0].dns}' "$current_config" > "$new_config" || return 1
       ;;
     *) die "Некорректный выбор." ;;
   esac

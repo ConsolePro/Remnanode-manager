@@ -324,6 +324,7 @@ routing_menu() {
     load_state
     print_header
     echo -e "${C_BOLD}Routing${C_RESET}"
+    echo "Дополнительные серверные настройки: отдельный server-routing-extensions.json; в Panel выбирай режим extensions."
     echo
     echo "Схема: РФ + белые списки → напрямую у клиента (на ноде: ${RU_POLICY}), торренты → блок, остальное → прокси."
     echo "Geo: $([[ "$GEO_ENABLED" == 1 ]] && echo "roscomvpn (ext:${GEO_SITE_FILE})" || echo "встроенные geosite/geoip Xray")   Реклама: $([[ "$BLOCK_ADS" == 1 ]] && echo блок || echo пропуск)"

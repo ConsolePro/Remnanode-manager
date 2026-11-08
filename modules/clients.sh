@@ -132,7 +132,7 @@ panel_create_hosts() {
   while IFS=$'\t' read -r tag uuid port; do
     [[ -n "$uuid" ]] || continue
     # The actual inbound port is authoritative, not a saved manager default.
-    case "$tag" in VLESS_RAW_REALITY|VLESS_XHTTP_REALITY) ;; *) continue ;; esac
+    case "$tag" in VLESS_SELFSTEAL_WITH_NGINX|VLESS_RAW_REALITY|VLESS_XHTTP_REALITY) ;; *) continue ;; esac
     found=$((found+1))
     validate_port "$port" || die "Нет корректного порта inbound ${tag}."
     payload="${PROFILE_DIR}/host-${tag}.json"
@@ -159,7 +159,7 @@ panel_create_hosts() {
     confirm_no_default "${method}: применить параметры хоста ${tag} ${DOMAIN}:${port}?" || continue
     panel_request "$method" /api/hosts "$payload" | jq -e '.response.uuid' >/dev/null || return 1
   done < <(jq -r '.response as $p | $p.inbounds[]? | . as $i | [$i.tag,$i.uuid,($p.config.inbounds[]? | select(.tag==$i.tag) | .port)] | @tsv' <<<"$response")
-  [[ "$found" -gt 0 ]] || die "В выбранном профиле нет VLESS_RAW_REALITY / VLESS_XHTTP_REALITY. Сначала примени профиль SelfSteal в Panel."
+  [[ "$found" -gt 0 ]] || die "В выбранном профиле нет VLESS_SELFSTEAL_WITH_NGINX / VLESS_XHTTP_REALITY. Сначала примени профиль SelfSteal в Panel."
   echo "RAW: flow xtls-rprx-vision задаётся в inbound. XHTTP: без flow, path/mode из inbound."
 }
 

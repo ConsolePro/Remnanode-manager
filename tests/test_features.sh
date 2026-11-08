@@ -164,7 +164,10 @@ load_state() { :; }
 panel_select_profile() { PANEL_PROFILE_UUID=profile-uuid; }
 panel_request() {
   case "$1 $2" in
-    'GET /api/config-profiles/profile-uuid') echo '{"response":{"inbounds":[{"tag":"VLESS_XHTTP_REALITY","uuid":"ib-uuid"}],"config":{"inbounds":[{"tag":"VLESS_XHTTP_REALITY","port":8443,"streamSettings":{"xhttpSettings":{"path":"/assets/correct"}}}]}}}' ;;
+    'GET /api/config-profiles/profile-uuid')
+      echo '{"response":{"inbounds":[{"tag":"VLESS_XHTTP_REALITY","uuid":"ib-uuid"}],"config":{"inbounds":[{"tag":"VLESS_XHTTP_REALITY","port":8443,"streamSettings":{"xhttpSettings":{"path":"/assets/correct"}}}]}}}' \
+        | jq --arg t "${HOST_FIXTURE_TAG:-VLESS_XHTTP_REALITY}" '.response.inbounds[0].tag=$t | .response.config.inbounds[0].tag=$t'
+      ;;
     'GET /api/hosts') echo '{"response":[{"uuid":"existing-host","address":"node.example.com","inbound":{"configProfileInboundUuid":"ib-uuid"}}]}' ;;
     'GET /api/hosts/existing-host') echo '{"response":{"uuid":"existing-host","remark":"Original host name"}}' ;;
     'PATCH /api/hosts') cp "$3" "${TMP}/host-repaired.json"; echo '{"response":{"uuid":"existing-host"}}' ;;
@@ -174,4 +177,7 @@ panel_request() {
 panel_create_hosts
 jq -e '.uuid=="existing-host" and .port==8443 and .path=="/assets/correct" and
   .remark=="Original host name" and .sni=="node.example.com" and .keepSniBlank==false' "${TMP}/host-repaired.json" >/dev/null
+HOST_FIXTURE_TAG=VLESS_SELFSTEAL_WITH_NGINX
+panel_create_hosts
+jq -e '.uuid=="existing-host" and .path=="" and .sni=="node.example.com"' "${TMP}/host-repaired.json" >/dev/null
 echo 'Feature regression tests passed.'

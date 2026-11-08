@@ -59,12 +59,7 @@ class XrayRuntimeTests(unittest.TestCase):
         self.validate(config)
 
     def test_server_profile(self):
-        config = generated("""
-          ROUTING_DIR=$(mktemp -d); ensure_routing_lists
-          jq -n --argjson o "$(build_outbounds_json)" --argjson d "$(build_dns_json)" \
-            --argjson r "$(build_routing_json)" '{log:{loglevel:"warning"},inbounds:[],outbounds:$o,dns:$d,routing:$r}'
-          rm -rf "$ROUTING_DIR"
-        """)
+        config = generated("build_node_profile_json")
         self.validate(config)
 
     def test_selfsteal_reality_inbounds(self):
@@ -75,9 +70,11 @@ class XrayRuntimeTests(unittest.TestCase):
           RAW_SHORT_IDS_JSON='["0123456789abcdef"]'
           XHTTP_SHORT_IDS_JSON='["fedcba9876543210"]'
           XHTTP_PATH=/assets/test REALITY_PRIVATE_KEY=""" + key + """
-          jq -n --argjson i "$(build_inbounds_json)" --argjson o "$(build_outbounds_json)" \
-            '{log:{loglevel:"warning"},inbounds:$i,outbounds:$o}'
+          build_node_profile_json
         """)
+        expected = json.loads((ROOT / "tests/fixtures/selfsteal-profile.json").read_text(encoding="utf-8"))
+        expected["inbounds"][0]["streamSettings"]["realitySettings"]["privateKey"] = key
+        self.assertEqual(config["inbounds"][0], expected["inbounds"][0])
         self.validate(config)
 
 

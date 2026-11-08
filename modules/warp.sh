@@ -28,7 +28,8 @@ warp_install() {
   WARP_OUTBOUND="1"
   save_state
   generate_xray_profile 1
-  ok "WARP outbound включён. Домены: $(routing_list_file warp)"
+  ok "WARP outbound подготовлен в ${PROFILE_DIR}/server-routing-extensions.json. Домены: $(routing_list_file warp)"
+  echo "Для применения выбери режим extensions при отправке профиля в Panel."
 }
 
 warp_test() {
